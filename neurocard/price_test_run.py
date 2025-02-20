@@ -4,7 +4,9 @@ import argparse
 import collections
 import glob
 import os
+import pickle
 import pprint
+import sys
 import time
 
 import numpy as np
@@ -19,9 +21,7 @@ from torch.utils import data
 import wandb
 
 import common
-import datasets
 import estimators as estimators_lib
-import experiments
 import factorized_sampler
 import fair_sampler
 import join_utils
@@ -29,6 +29,8 @@ import made
 import train_utils
 import transformer
 import utils
+
+from price_test import datasets, experiments
 
 parser = argparse.ArgumentParser()
 
@@ -50,6 +52,13 @@ parser.add_argument(
     type=int,
     required=False,
     help='Number of GPUs per trial. No effect if no GPUs are available.')
+
+parser.add_argument('--config_path',
+                    # nargs='+',
+                    default='',
+                    type=str,
+                    required=False,
+                    help='List of experiments config to run.')
 
 args = parser.parse_args()
 
@@ -470,9 +479,9 @@ class NeuroCard(tune.Trainable):
         wandb_project = config['__run']
         wandb.init(name=os.path.basename(
             self.logdir if self.logdir[-1] != '/' else self.logdir[:-1]),
-                   mode="offline",
                    sync_tensorboard=True,
                    config=config,
+                   mode="offline",
                    project=wandb_project)
 
         self.epoch = 0
@@ -480,7 +489,7 @@ class NeuroCard(tune.Trainable):
         if isinstance(self.join_tables, int):
             # Hack to support training single-model tables.
             sorted_table_names = sorted(
-                list(datasets.JoinOrderBenchmark.GetJobLightJoinKeys().keys()))
+                list(datasets.TestDataset(config).GetTestDatasetJoinKeys(config['file_fanout_path']).keys()))
             self.join_tables = [sorted_table_names[self.join_tables]]
 
         # Try to make all the runs the same, except for input orderings.
@@ -492,15 +501,14 @@ class NeuroCard(tune.Trainable):
         self.join_spec = None
         join_iter_dataset = None
         table_primary_index = None
-
+        
         # New datasets should be loaded here.
-        assert self.dataset in ['imdb']
-        if self.dataset == 'imdb':
+        if self.dataset in config['test_datasets']:
             print('Training on Join({})'.format(self.join_tables))
             loaded_tables = []
             for t in self.join_tables:
                 print('Loading', t)
-                table = datasets.LoadImdb(t, use_cols=self.use_cols)
+                table = datasets.TestDataset(config).LoadDataBase(self.dataset, t, data_dir=config['datasets_path'])
                 table.data.info()
                 loaded_tables.append(table)
             if len(self.join_tables) > 1:
@@ -512,9 +520,9 @@ class NeuroCard(tune.Trainable):
                 self.loader = loader
 
                 table_primary_index = [t.name for t in loaded_tables
-                                      ].index('title')
+                                      ].index(config['join_root'])
 
-                table.cardinality = datasets.JoinOrderBenchmark.GetFullOuterCardinalityOrFail(
+                table.cardinality = datasets.TestDataset(config).GetFullOuterCardinalityOrFail(
                     self.join_tables)
                 self.train_data.cardinality = table.cardinality
 
@@ -524,7 +532,7 @@ class NeuroCard(tune.Trainable):
                 # Train on a single table.
                 table = loaded_tables[0]
 
-        if self.dataset != 'imdb' or len(self.join_tables) == 1:
+        if len(self.join_tables) == 1:
             table.data.info()
             self.train_data = self.MakeTableDataset(table)
 
@@ -614,8 +622,8 @@ class NeuroCard(tune.Trainable):
 
         self.loaded_queries = None
         self.oracle_cards = None
-        if self.dataset == 'imdb' and len(self.join_tables) > 1:
-            queries_job_format = utils.JobToQuery(self.queries_csv)
+        if len(self.join_tables) > 1:
+            queries_job_format = utils.JobToQuery(f'{self.queries_csv}/{self.dataset}/workloads_3000.csv')
             self.loaded_queries, self.oracle_cards = utils.UnpackQueries(
                 self.table, queries_job_format)
 
@@ -685,7 +693,9 @@ class NeuroCard(tune.Trainable):
         table = common.ConcatTables(loaded_tables,
                                     self.join_keys,
                                     sample_from_join_dataset=join_iter_dataset)
-
+        
+        # print(f'join_iter_dataset.sampler.join_card: {join_iter_dataset.sampler.join_card}')
+        # print(f'join_iter_dataset {join_iter_dataset.columns_in_join()}')
         if self.factorize:
             join_iter_dataset = common.FactorizedSampleFromJoinIterDataset(
                 join_iter_dataset,
@@ -705,8 +715,6 @@ class NeuroCard(tune.Trainable):
 
     def MakeOrdering(self, table):
         fixed_ordering = None
-        if self.dataset != 'imdb' and self.special_orders <= 1:
-            fixed_ordering = list(range(len(table.columns)))
 
         if self.order is not None:
             print('Using passed-in order:', self.order)
@@ -862,7 +870,7 @@ class NeuroCard(tune.Trainable):
                 'train',
                 self.model,
                 self.opt,
-                upto=self.max_steps if self.dataset == 'imdb' else None,
+                upto=self.max_steps,
                 train_data=self.train_data,
                 val_data=self.train_data,
                 batch_size=self.bs,
@@ -957,13 +965,13 @@ class NeuroCard(tune.Trainable):
                 str(self.order_seed) if self.order_seed is not None else
                 '_'.join(map(str, self.fixed_ordering))[:60])
 
-        if self.dataset == 'imdb':
+        if self.dataset:
             tuples_seen = self.bs * self.max_steps * self.epochs
             PATH = PATH.replace(
                 '-seed', '-{}tups-seed'.format(utils.HumanFormat(tuples_seen)))
 
             if len(self.join_tables) == 1:
-                PATH = PATH.replace('imdb',
+                PATH = PATH.replace(self.dataset,
                                     'indep-{}'.format(self.join_tables[0]))
 
         torch.save(self.model.state_dict(), PATH)
@@ -1083,7 +1091,10 @@ if __name__ == '__main__':
 
     num_gpus = args.gpus if torch.cuda.is_available() else 0
     num_cpus = args.cpus
-
+    
+    with open(args.config_path, 'rb') as f:
+        experiment_cfg = pickle.load(f)
+        
     tune.run_experiments(
         {
             k: {
@@ -1093,12 +1104,12 @@ if __name__ == '__main__':
                     'gpu': num_gpus,
                     'cpu': num_cpus,
                 },
-                'config': dict(
+                'config': dict(dict(
                     experiments.EXPERIMENT_CONFIGS[k], **{
                         '__run': k,
                         '__gpu': num_gpus,
                         '__cpu': num_cpus
-                    }),
+                    }), **experiment_cfg),
             } for k in args.run
         },
         concurrent=True,

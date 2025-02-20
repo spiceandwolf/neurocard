@@ -75,7 +75,7 @@ def JobToQuery(csv_file, use_alias_keys=True):
     """
     queries = []
     with open(csv_file) as f:
-        data_raw = list(list(rec) for rec in csv.reader(f, delimiter='#'))
+        data_raw = list(list(rec) for rec in csv.reader(f, delimiter='#', escapechar='\\'))
         for row in data_raw:
             reader = csv.reader(row)  # comma-separated
             table_dict = _get_table_dict(next(reader))

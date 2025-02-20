@@ -17,3 +17,5 @@ datasets/*
 **/*.aux
 **/*.fdb_latexmk
 **/texput.fls
+**/wandb/
+**/cache/

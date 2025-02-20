@@ -56,7 +56,7 @@ def save_result(filename, subdir=None, description="result"):
     return decorator
 
 
-def load_table(table, data_dir="datasets/job", **kwargs):
+def load_table(table, data_dir='/home/user/oblab/PRICE/datas/datasets/ssb', **kwargs):
     if table in TOY_TABLES:
         return TOY_TABLES[table]
 
@@ -74,6 +74,7 @@ def load_table(table, data_dir="datasets/job", **kwargs):
         return pd.read_csv(os.path.join(data_dir, f"{table}.csv"),
                            escapechar="\\",
                            low_memory=False,
+                           sep='|',
                            **kwargs)
 
     return work()

@@ -3,6 +3,7 @@
 import argparse
 import os
 import re
+import time
 
 import glog as log
 import numpy as np
@@ -178,8 +179,10 @@ def get_join_key_groups(table, jcts, join_spec):
 
 @ray.remote
 def get_primary_key_groups(table, keys, df, join_spec):
+    df = df.copy()
     indices = df.groupby(keys).indices
     # Manually patch the dictionary to make sure its keys are tuples.
+    
     if len(keys) == 1:
         indices = {(k,): v for k, v in indices.items()}
     rustlib.prepare_indices(f"{join_spec.join_name}/{table}.pk.indices",
