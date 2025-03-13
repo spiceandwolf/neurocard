@@ -56,7 +56,8 @@ def save_result(filename, subdir=None, description="result"):
     return decorator
 
 
-def load_table(table, data_dir='/home/user/oblab/PRICE/datas/datasets/ssb', **kwargs):
+def load_table(table, data_dir='./datasets/job/', **kwargs):
+    data_dir='/home/user/oblab/PRICE/datas/datasets/ssb'
     if table in TOY_TABLES:
         return TOY_TABLES[table]
 

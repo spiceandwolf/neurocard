@@ -742,6 +742,7 @@ class SamplerBasedIterDataset(IterableDataset):
         # HACK: hard-code 'title' to be the primary relation.  As optimization
         # don't add virtual columns for this table.
         table_names = join_spec.join_tables
+        # self.primary_table_index = table_names.index('title')
         self.primary_table_index = table_names.index('lineorder')
 
         self.combined_columns = []

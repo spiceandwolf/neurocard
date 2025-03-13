@@ -195,6 +195,11 @@ TEST_CONFIGS['test-datasets'] = dict(
         },
     })
 
+TEST_CONFIGS['test-reload'] = dict(
+    EXPERIMENT_CONFIGS['test'], **{
+        'checkpoint_to_load': 'models/job-light-pretrained.pt',
+    })
+
 for name in TEST_CONFIGS:
     TEST_CONFIGS[name].update({'save_checkpoint_at_end': False})
 EXPERIMENT_CONFIGS.update(TEST_CONFIGS)

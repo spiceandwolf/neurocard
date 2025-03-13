@@ -511,6 +511,7 @@ class NeuroCard(tune.Trainable):
                 table = datasets.TestDataset(config).LoadDataBase(self.dataset, t, data_dir=config['datasets_path'])
                 table.data.info()
                 loaded_tables.append(table)
+            
             if len(self.join_tables) > 1:
                 join_spec, join_iter_dataset, loader, table = self.MakeSamplerDatasetLoader(
                     loaded_tables)
@@ -525,7 +526,7 @@ class NeuroCard(tune.Trainable):
                 table.cardinality = datasets.TestDataset(config).GetFullOuterCardinalityOrFail(
                     self.join_tables)
                 self.train_data.cardinality = table.cardinality
-
+                
                 print('rows in full join', table.cardinality,
                       'cols in full join', len(table.columns), 'cols:', table)
             else:
@@ -623,9 +624,26 @@ class NeuroCard(tune.Trainable):
         self.loaded_queries = None
         self.oracle_cards = None
         if len(self.join_tables) > 1:
-            queries_job_format = utils.JobToQuery(f'{self.queries_csv}/{self.dataset}/workloads_3000.csv')
+            queries_job_format = utils.JobToQuery(f'{self.queries_csv}/{self.dataset}/workloads.csv')
             self.loaded_queries, self.oracle_cards = utils.UnpackQueries(
                 self.table, queries_job_format)
+        
+            tables = {table.name: table for table in loaded_tables}
+            cols_in_join = [col.name for col in table.columns]
+            
+            for i, (query_cols, query_ops, query_vals) in enumerate(self.loaded_queries):
+                casted_vals = []
+                for c, v in zip(query_cols, query_vals):
+                    # print(f'c.name {c.name} ')
+                    table_col = c.name.split(':')
+                    if len(table_col) == 2 and c.name in cols_in_join:
+                        t_name, c_name = table_col
+                        # print(f'col name {[col for col in tables[t_name].data.columns]}')
+                        casted_vals.append(tables[t_name].data[c.name.replace(":", ".")].dtype.type(v))
+                    else:
+                        casted_vals.append(v)
+                        
+                self.loaded_queries[i] = (query_cols, query_ops, casted_vals)
 
         if config['__gpu'] == 0:
             print('CUDA not available, using # cpu cores for intra-op:',
@@ -905,7 +923,7 @@ class NeuroCard(tune.Trainable):
             'train_bit_gap': self.model.model_bits - self.table_bits,
             'results': results,
         }
-
+    
         if self.compute_test_loss:
             returns['test_bits'] = np.mean(
                 run_epoch(
@@ -915,7 +933,7 @@ class NeuroCard(tune.Trainable):
                     train_data=self.train_data,
                     val_data=self.train_data,
                     batch_size=1024,
-                    upto=None if self.dataset != 'imdb' else 20,
+                    upto=20,
                     log_every=200,
                     table_bits=self.table_bits,
                     return_losses=True,
@@ -992,7 +1010,9 @@ class NeuroCard(tune.Trainable):
         for k, v in results['results'].items():
             if 'psample' in k:
                 psamples[k] = v
+        results['config'] = None
         wandb.log(results)
+            
         self.tbx_logger.on_result(results)
         self.tbx_logger._file_writer.add_custom_scalars_multilinechart(
             map(lambda s: 'ray/tune/results/{}'.format(s), psamples.keys()),
@@ -1025,7 +1045,7 @@ class NeuroCard(tune.Trainable):
                                                 card / table.cardinality * 100),
               end='')
         for est in estimators:
-            est_card = est.Query(cols, ops, vals)
+            est_card = int(est.Query(cols, ops, vals))
             err = self.ErrorMetric(est_card, card)
             est.AddError(err, est_card, card)
             print('{} {} (err={:.3f}) '.format(str(est), est_card, err), end='')
@@ -1046,7 +1066,7 @@ class NeuroCard(tune.Trainable):
                 estimators = self.MakeProgressiveSamplers(
                     model,
                     self.train_data if self.factorize else self.table,
-                    do_fanout_scaling=(self.dataset == 'imdb'))
+                    do_fanout_scaling=self.factorize)
                 if self.eval_join_sampling:  # None or an int.
                     estimators = [
                         estimators_lib.JoinSampling(self.train_data, self.table,
